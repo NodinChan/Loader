@@ -1,5 +1,5 @@
 /*
- *     Copyright (C) 2015  Nodin Chan
+ *     Copyright (C) 2016  Nodin Chan
  *     
  *     This program is free software: you can redistribute it and/or modify
  *     it under the terms of the GNU General Public License as published by
@@ -18,264 +18,194 @@
 package com.nodinchan.dev.tools.loading;
 
 import java.io.File;
+import java.io.FileFilter;
 import java.lang.reflect.Constructor;
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Properties;
+import java.util.function.Predicate;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-public class Loader<T> {
+public final class Loader<T> {
+	
+	public static final Predicate<File> JAR_FILE = (file) -> Objects.nonNull(file) && file.getName().endsWith(".jar");
 	
 	private static final File DIRECTORY = new File("loadables");
-	private static final Filter FILTER = new Filter();
+	private static final FileFilter FILTER = (file) -> JAR_FILE.test(file);
 	private static final Logger LOG = Logger.getLogger("Loader");
 	private static final String PROPERTIES = "loadable.properties";
 	
-	private final Class<T> clazz;
+	private final Class<T> type;
 	
 	private final File directory;
-	private final Filter filter;
-	private final Logger log;
+	private final FileFilter filter;
+	
 	private final String properties;
 	
-	private Loader(Class<T> clazz, File directory, String properties, Filter filter, Logger log) {
-		this.clazz = clazz;
+	private final Logger log;
+
+	private Loader(Class<T> type, File directory, FileFilter filter, String properties, Logger log) {
+		this.type = type;
 		this.directory = directory;
 		this.filter = filter;
-		this.log = log;
 		this.properties = properties;
+		this.log = log;
 	}
 	
-	public static <T> LoaderBuilder<T> builder(Class<T> clazz) {
-		return new LoaderBuilder<T>(clazz);
+	public static <T> LoaderBuilder<T> builder(Class<T> type) {
+		if (type == null)
+			throw new IllegalArgumentException(new NullPointerException("Class 'type' cannot be null"));
+		
+		return new LoaderBuilder<T>(type);
+	}
+	
+	public Optional<T> load(File file) {
+		return uncheckedLoad(type, file, properties, log);
 	}
 	
 	public List<T> load() {
-		List<T> loadables = new ArrayList<>();
-		
-		for (File file : directory.listFiles(filter)) {
-			JarFile jar = null;
-			
-			try {
-				jar = new JarFile(file);
-				JarEntry entry = jar.getJarEntry(properties);
-				
-				if (entry == null)
-					throw new IllegalStateException("The file " + properties + " was not found");
-				
-				ClassLoader loader = URLClassLoader.newInstance(new URL[] { file.toURI().toURL() });
-				
-				Properties description = new Properties();
-				description.load(jar.getInputStream(entry));
-				
-				String main = description.getProperty("main-class", "");
-				
-				Class<?> loadedClass = Class.forName(main, true, loader);
-				Class<? extends T> loadableClass = loadedClass.asSubclass(clazz);
-				Constructor<? extends T> loadableConstructor = loadableClass.getConstructor();
-				
-				loadables.add(loadableConstructor.newInstance());
-				
-			} catch (Exception e) {
-				log.log(Level.WARNING, "The file " + file.getName() + " failed to load");
-				e.printStackTrace();
-				
-			} finally {
-				if (jar != null)
-					try { jar.close(); } catch (Exception e) { e.printStackTrace(); }
-			}
-		}
-		
-		return loadables;
+		return toLoadables(uncheckedLoad(type, directory, filter, properties, log));
 	}
 	
-	public T load(File file) {
-		if (!filter.accept(file))
-			throw new IllegalArgumentException("File must be a JAR file");
+	public static <T> Optional<T> load(Class<T> type, File file, String properties, Logger log) {
+		if (Objects.isNull(type))
+			throw new IllegalArgumentException(new NullPointerException("Class 'type' cannot be null"));
 		
-		T loadable = null;
+		if (JAR_FILE.negate().test(file))
+			throw new IllegalArgumentException("File 'file' is not a valid JAR File");
 		
-		JarFile jar = null;
-		
-		try {
-			jar = new JarFile(file);
-			JarEntry entry = jar.getJarEntry(properties);
-			
-			if (entry == null)
-				throw new IllegalStateException("The file " + properties + " was not found");
-			
-			ClassLoader loader = URLClassLoader.newInstance(new URL[] { file.toURI().toURL() });
-			
-			Properties description = new Properties();
-			description.load(jar.getInputStream(entry));
-			
-			String main = description.getProperty("main-class", "");
-			
-			Class<?> loadedClass = Class.forName(main, true, loader);
-			Class<? extends T> loadableClass = loadedClass.asSubclass(clazz);
-			Constructor<? extends T> loadableConstructor = loadableClass.getConstructor();
-			
-			loadable = loadableConstructor.newInstance();
-			
-		} catch (Exception e) {
-			log.log(Level.WARNING, "The file " + file.getName() + " failed to load");
-			e.printStackTrace();
-			
-		} finally {
-			if (jar != null)
-				try { jar.close(); } catch (Exception e) { e.printStackTrace(); }
-		}
-		
-		return loadable;
-	}
-	
-	public static <T> T load(Class<T> clazz, File file, String properties, Logger log) {
-		if (clazz == null)
-			throw new IllegalArgumentException(new NullPointerException("Class cannot be null"));
-		
-		if (!FILTER.accept(file))
-			throw new IllegalArgumentException("File must be a JAR file");
-		
-		if (properties == null)
+		if (Objects.isNull(properties))
 			properties = PROPERTIES;
 		
-		if (log == null)
+		if (Objects.isNull(log))
 			log = LOG;
 		
-		T loadable = null;
-		
-		JarFile jar = null;
-		
-		try {
-			jar = new JarFile(file);
-			JarEntry entry = jar.getJarEntry(properties);
-			
-			if (entry == null)
-				throw new IllegalStateException("The file " + properties + " was not found");
-			
-			ClassLoader loader = URLClassLoader.newInstance(new URL[] { file.toURI().toURL() });
-			
-			Properties description = new Properties();
-			description.load(jar.getInputStream(entry));
-			
-			String main = description.getProperty("main-class", "");
-			
-			Class<?> loadedClass = Class.forName(main, true, loader);
-			Class<? extends T> loadableClass = loadedClass.asSubclass(clazz);
-			Constructor<? extends T> loadableConstructor = loadableClass.getConstructor();
-			
-			loadable = loadableConstructor.newInstance();
-			
-		} catch (Exception e) {
-			log.log(Level.WARNING, "The file " + file.getName() + " failed to load");
-			e.printStackTrace();
-			
-		} finally {
-			if (jar != null)
-				try { jar.close(); } catch (Exception e) { e.printStackTrace(); }
-		}
-		
-		return loadable;
+		return uncheckedLoad(type, file, properties, log);
 	}
 	
-	public static <T> List<T> load(Class<T> clazz, File directory, String properties, Filter filter, Logger log) {
-		if (clazz == null)
-			throw new IllegalArgumentException(new NullPointerException("Class cannot be null"));
+	public static <T> List<T> load(Class<T> type, File directory, Predicate<File> predicate, String properties, Logger log) {
+		if (Objects.isNull(type))
+			throw new IllegalArgumentException(new NullPointerException("Class 'type' cannot be null"));
 		
-		if (directory == null)
+		if (Objects.isNull(directory))
 			directory = DIRECTORY;
-		
-		if (properties == null)
-			properties = PROPERTIES;
 		
 		directory.mkdirs();
 		
-		if (filter == null)
-			filter = FILTER;
+		FileFilter filter = (Objects.isNull(predicate)) ? FILTER : ((file) -> JAR_FILE.and(predicate).test(file));
 		
-		if (log == null)
+		if (Objects.isNull(properties))
+			properties = PROPERTIES;
+		
+		if (Objects.isNull(log))
 			log = LOG;
 		
-		List<T> loadables = new ArrayList<>();
+		return toLoadables(uncheckedLoad(type, directory, filter, properties, log));
+	}
+	
+	private static <T> Optional<T> uncheckedLoad(Class<T> type, File file, String properties, Logger log) {
+		T loadable = null;
 		
-		for (File file : directory.listFiles(filter)) {
-			JarFile jar = null;
+		try (JarFile jar = new JarFile(file)) {
+			JarEntry entry = jar.getJarEntry(properties);
 			
-			try {
-				jar = new JarFile(file);
-				JarEntry entry = jar.getJarEntry(properties);
-				
-				if (entry == null)
-					throw new IllegalStateException("The file " + properties + " was not found");
-				
-				ClassLoader loader = URLClassLoader.newInstance(new URL[] { file.toURI().toURL() });
-				
-				Properties description = new Properties();
-				description.load(jar.getInputStream(entry));
-				
-				String main = description.getProperty("main-class", "");
-				
-				Class<?> loadedClass = Class.forName(main, true, loader);
-				Class<? extends T> loadableClass = loadedClass.asSubclass(clazz);
-				Constructor<? extends T> loadableConstructor = loadableClass.getConstructor();
-				
-				loadables.add(loadableConstructor.newInstance());
-				
-			} catch (Exception e) {
-				log.log(Level.WARNING, "The file " + file.getName() + " failed to load");
-				e.printStackTrace();
-				
-			} finally {
-				if (jar != null)
-					try { jar.close(); } catch (Exception e) { e.printStackTrace(); }
-			}
+			if (Objects.isNull(entry))
+				throw new IllegalStateException("The file " + properties + " was not found");
+			
+			ClassLoader loader = URLClassLoader.newInstance(new URL[] { file.toURI().toURL() });
+			
+			Properties description = new Properties();
+			description.load(jar.getInputStream(entry));
+			
+			String main = description.getProperty("main-class", "");
+			
+			Class<?> loadedClass = Class.forName(main, true, loader);
+			Class<? extends T> loadableClass = loadedClass.asSubclass(type);
+			Constructor<? extends T> loadableConstructor = loadableClass.getConstructor();
+			
+			loadable = loadableConstructor.newInstance();
+			
+		} catch (Exception e) {
+			log.log(Level.WARNING, "The file " + file.getName() + " failed to load");
+			e.printStackTrace();
 		}
 		
-		return loadables;
+		return Optional.ofNullable(loadable);
+	}
+	
+	private static <T> Stream<Optional<T>> uncheckedLoad(Class<T> type, File directory, FileFilter filter, String properties, Logger log) {
+		return Arrays.stream(directory.listFiles(filter)).map((file) -> uncheckedLoad(type, file, properties, log));
+	}
+	
+	private static <T> List<T> toLoadables(Stream<Optional<T>> loadables) {
+		return loadables.filter((optional) -> optional.isPresent()).map((optional) -> optional.get()).collect(Collectors.toList());
 	}
 	
 	public static final class LoaderBuilder<T> {
 		
-		private final Class<T> clazz;
+		private final Class<T> type;
 		
-		private File directory = DIRECTORY;
-		private Filter filter = FILTER;
-		private Logger log = LOG;
-		private String properties = PROPERTIES;
+		private File directory;
+		private Predicate<File> predicate;
 		
-		private LoaderBuilder(Class<T> clazz) {
-			if (clazz == null)
-				throw new IllegalArgumentException(new NullPointerException("Class cannot be null"));
-			
-			this.clazz = clazz;
+		private String properties;
+		
+		private Logger log;
+		
+		private LoaderBuilder(Class<T> type) {
+			this.type = type;
+			this.directory = DIRECTORY;
+			this.predicate = JAR_FILE;
+			this.properties = PROPERTIES;
+			this.log = LOG;
 		}
 		
 		public Loader<T> build() {
-			return new Loader<T>(clazz, directory, properties, filter, log);
+			return new Loader<T>(type, directory, predicate::test, properties, log);
+		}
+		
+		public File getDirectory() {
+			return directory;
+		}
+		
+		public Predicate<File> getFilterSettings() {
+			return predicate;
+		}
+		
+		public Logger getLogger() {
+			return log;
+		}
+		
+		public String getPropertiesFile() {
+			return properties;
 		}
 		
 		public LoaderBuilder<T> setDirectory(File directory) {
-			(this.directory = (directory == null) ? DIRECTORY : directory).mkdirs();
+			this.directory = (Objects.isNull(directory)) ? DIRECTORY : directory;
 			return this;
 		}
 		
-		public LoaderBuilder<T> setFilter(Filter filter) {
-			this.filter = (filter == null) ? FILTER : filter;
+		public LoaderBuilder<T> setFilterSettings(Predicate<File> predicate) {
+			this.predicate = (Objects.isNull(predicate)) ? JAR_FILE : JAR_FILE.and(predicate);
 			return this;
 		}
 		
 		public LoaderBuilder<T> setLogger(Logger log) {
-			this.log = (log == null) ? LOG : log;
+			this.log = (Objects.isNull(log)) ? LOG : log;
 			return this;
 		}
 		
 		public LoaderBuilder<T> setPropertiesFile(String properties) {
-			this.properties = (properties == null || properties.isEmpty()) ? PROPERTIES : properties;
+			this.properties = (Objects.isNull(properties)) ? PROPERTIES : properties;
 			return this;
 		}
 	}
