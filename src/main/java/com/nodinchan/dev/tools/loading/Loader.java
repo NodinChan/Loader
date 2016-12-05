@@ -18,15 +18,15 @@
 package com.nodinchan.dev.tools.loading;
 
 import java.io.File;
-import java.io.FileFilter;
+import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.util.Arrays;
-import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Properties;
+import java.util.Set;
 import java.util.function.Predicate;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -35,178 +35,219 @@ import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+/**
+ * Loader for JAR Files
+ * 
+ * @author Nodin
+ */
 public final class Loader<T> {
 	
-	public static final Predicate<File> JAR_FILE = (file) -> Objects.nonNull(file) && file.getName().endsWith(".jar");
+	public static final Predicate<File> VALID_FILE = (file) -> Objects.nonNull(file) && file.getName().endsWith(".jar");
 	
-	private static final File DIRECTORY = new File("loadables");
-	private static final FileFilter FILTER = (file) -> JAR_FILE.test(file);
-	private static final Logger LOG = Logger.getLogger("Loader");
-	private static final String PROPERTIES = "loadable.properties";
+	private static final Logger LOGGER = Logger.getLogger("Loader");
+	private static final String PROPERTIES = "module.properties";
 	
 	private final Class<T> type;
+	private final InitFunction<T> init;
 	
-	private final File directory;
-	private final FileFilter filter;
-	
-	private final String properties;
-	
-	private final Logger log;
-
-	private Loader(Class<T> type, File directory, FileFilter filter, String properties, Logger log) {
+	private Loader(Class<T> type, InitFunction<T> init) {
 		this.type = type;
-		this.directory = directory;
-		this.filter = filter;
-		this.properties = properties;
-		this.log = log;
+		this.init = (Objects.nonNull(init)) ? init : (module, properties) -> module;
 	}
 	
-	public static <T> LoaderBuilder<T> builder(Class<T> type) {
-		if (type == null)
-			throw new IllegalArgumentException(new NullPointerException("Class 'type' cannot be null"));
-		
-		return new LoaderBuilder<T>(type);
+	/**
+	 * Creates a new instance of the {@link Loader}
+	 * 
+	 * @param type The class type of the results
+	 * @param init Function to initialise after instantiation
+	 * 
+	 * @return {@link Loader}
+	 */
+	public static <T> Loader<T> newInstance(Class<T> type, InitFunction<T> init) {
+		return new Loader<T>(type, init);
 	}
 	
-	public Optional<T> load(File file) {
-		return uncheckedLoad(type, file, properties, log);
+	/**
+	 * Creates a new instance of the {@link Loader}
+	 * 
+	 * @param type The class type of the results
+	 * 
+	 * @return {@link Loader}
+	 */
+	public static <T> Loader<T> newInstance(Class<T> type) {
+		return new Loader<T>(type, (module, properties) -> module);
 	}
 	
-	public List<T> load() {
-		return toLoadables(uncheckedLoad(type, directory, filter, properties, log));
-	}
-	
-	public static <T> Optional<T> load(Class<T> type, File file, String properties, Logger log) {
+	/**
+	 * Loads the JAR file
+	 * 
+	 * @param type The class type of the result
+	 * @param file The file to be loaded
+	 * @param init Function to initialise after instantiation
+	 * 
+	 * @return The object instance that was created
+	 */
+	public static <T> T load(Class<T> type, File file, InitFunction<T> init) {
 		if (Objects.isNull(type))
-			throw new IllegalArgumentException(new NullPointerException("Class 'type' cannot be null"));
+			throw new IllegalArgumentException(new NullPointerException("Class Type cannot be null"));
 		
-		if (JAR_FILE.negate().test(file))
-			throw new IllegalArgumentException("File 'file' is not a valid JAR File");
+		if (VALID_FILE.test(file))
+			throw new IllegalArgumentException("File is invalid");
 		
-		if (Objects.isNull(properties))
-			properties = PROPERTIES;
+		if (Objects.isNull(init))
+			init = (module, properties) -> module;
 		
-		if (Objects.isNull(log))
-			log = LOG;
-		
-		return uncheckedLoad(type, file, properties, log);
-	}
-	
-	public static <T> List<T> load(Class<T> type, File directory, Predicate<File> predicate, String properties, Logger log) {
-		if (Objects.isNull(type))
-			throw new IllegalArgumentException(new NullPointerException("Class 'type' cannot be null"));
-		
-		if (Objects.isNull(directory))
-			directory = DIRECTORY;
-		
-		directory.mkdirs();
-		
-		FileFilter filter = (Objects.isNull(predicate)) ? FILTER : ((file) -> JAR_FILE.and(predicate).test(file));
-		
-		if (Objects.isNull(properties))
-			properties = PROPERTIES;
-		
-		if (Objects.isNull(log))
-			log = LOG;
-		
-		return toLoadables(uncheckedLoad(type, directory, filter, properties, log));
-	}
-	
-	private static <T> Optional<T> uncheckedLoad(Class<T> type, File file, String properties, Logger log) {
-		T loadable = null;
+		T module = null;
 		
 		try (JarFile jar = new JarFile(file)) {
-			JarEntry entry = jar.getJarEntry(properties);
+			JarEntry entry = jar.getJarEntry(PROPERTIES);
 			
 			if (Objects.isNull(entry))
-				throw new IllegalStateException("The file " + properties + " was not found");
+				throw new FileNotFoundException("The file \"" + PROPERTIES + "\" was not found");
 			
-			ClassLoader loader = URLClassLoader.newInstance(new URL[] { file.toURI().toURL() });
+			Properties properties = new Properties();
 			
-			Properties description = new Properties();
-			description.load(jar.getInputStream(entry));
+			properties.load(jar.getInputStream(entry));
 			
-			String main = description.getProperty("main-class", "");
+			Class<?> loadedClass = Class.forName(properties.getProperty("main-class", ""), true, URLClassLoader.newInstance(new URL[] { file.toURI().toURL() }));
+			Class<? extends T> moduleClass = loadedClass.asSubclass(type);
+			Constructor<? extends T> moduleConstructor = moduleClass.getConstructor();
 			
-			Class<?> loadedClass = Class.forName(main, true, loader);
-			Class<? extends T> loadableClass = loadedClass.asSubclass(type);
-			Constructor<? extends T> loadableConstructor = loadableClass.getConstructor();
+			module = init.initialise(moduleConstructor.newInstance(), properties);
 			
-			loadable = loadableConstructor.newInstance();
+		} catch (ClassNotFoundException e) {
+			LOGGER.log(Level.WARNING, "The main class of " + file.getName() + " cannot be found", e);
 			
-		} catch (Exception e) {
-			log.log(Level.WARNING, "The file " + file.getName() + " failed to load");
-			e.printStackTrace();
+		} catch (IllegalAccessException | IllegalArgumentException | InstantiationException | InvocationTargetException | NoSuchMethodException | SecurityException e) {
+			LOGGER.log(Level.WARNING, "The main class of " + file.getName() + " cannot be instantiated", e);
+			
+		} catch (IOException e) {
+			LOGGER.log(Level.WARNING, "The file \"" + file.getName() + "\" failed to load", e);
 		}
 		
-		return Optional.ofNullable(loadable);
+		return module;
 	}
 	
-	private static <T> Stream<Optional<T>> uncheckedLoad(Class<T> type, File directory, FileFilter filter, String properties, Logger log) {
-		return Arrays.stream(directory.listFiles(filter)).map((file) -> uncheckedLoad(type, file, properties, log));
+	/**
+	 * Loads the JAR files
+	 * 
+	 * @param type The class type of the result
+	 * @param files The files to be loaded
+	 * @param init Function to initialise after instantiation
+	 * 
+	 * @return A {@link Set} of the object instances that were created
+	 */
+	public static <T> Set<T> load(Class<T> type, File[] files, InitFunction<T> init) {
+		if (Objects.isNull(files))
+			throw new IllegalArgumentException(new NullPointerException("Files cannot be null"));
+		
+		return Stream.of(files).map((file) -> load(type, file, init)).filter((module) -> Objects.nonNull(module)).collect(Collectors.toSet());
 	}
 	
-	private static <T> List<T> toLoadables(Stream<Optional<T>> loadables) {
-		return loadables.filter((optional) -> optional.isPresent()).map((optional) -> optional.get()).collect(Collectors.toList());
+	/**
+	 * Loads the JAR files
+	 * 
+	 * @param type The class type of the result
+	 * @param directory The directory containing the files to be loaded
+	 * @param filter {@link Predicate} for filtering files applicable
+	 * @param init Function to initialise after instantiation
+	 * 
+	 * @return A {@link Set} of the object instances that were created
+	 */
+	public static <T> Set<T> load(Class<T> type, File directory, Predicate<File> filter, InitFunction<T> init) {
+		if (Objects.isNull(directory))
+			throw new IllegalArgumentException(new NullPointerException("Directory cannot be null"));
+		
+		return load(type, directory.listFiles((Objects.nonNull(filter)) ? (file) -> VALID_FILE.and(filter).test(file) : (file) -> VALID_FILE.test(file)), init);
 	}
 	
-	public static final class LoaderBuilder<T> {
+	/**
+	 * Loads the JAR file
+	 * 
+	 * @param type The class type of the result
+	 * @param file The file to be loaded
+	 * 
+	 * @return The object instance that was created
+	 */
+	public static <T> T load(Class<T> type, File file) {
+		return load(type, file, (module, properties) -> module);
+	}
+	
+	/**
+	 * Loads the JAR files
+	 * 
+	 * @param type The class type of the result
+	 * @param files The files to be loaded
+	 * 
+	 * @return A {@link Set} of the object instances that were created
+	 */
+	public static <T> Set<T> load(Class<T> type, File[] files) {
+		return load(type, files, (module, properties) -> module);
+	}
+	
+	/**
+	 * Loads the JAR files
+	 * 
+	 * @param type The class type of the result
+	 * @param directory The directory containing the files to be loaded
+	 * @param filter {@link Predicate} for filtering files applicable
+	 * 
+	 * @return A {@link Set} of the object instances that were created
+	 */
+	public static <T> Set<T> load(Class<T> type, File directory, Predicate<File> filter) {
+		return load(type, directory, filter, (module, properties) -> module);
+	}
+	
+	/**
+	 * Loads the JAR file
+	 * 
+	 * @param file The file to be loaded
+	 * 
+	 * @return The object instance that was created
+	 */
+	public T load(File file) {
+		return load(type, file, init);
+	}
+	
+	/**
+	 * Loads the JAR files
+	 * 
+	 * @param files The files to be loaded
+	 * 
+	 * @return A {@link Set} of the object instances that were created
+	 */
+	public Set<T> load(File... files) {
+		return load(type, files, init);
+	}
+	
+	/**
+	 * Loads the JAR files
+	 * 
+	 * @param directory The directory containing the files to be loaded
+	 * @param filter {@link Predicate} for filtering files applicable
+	 * 
+	 * @return A {@link Set} of the object instances that were created
+	 */
+	public Set<T> load(File directory, Predicate<File> filter) {
+		return load(type, directory, filter, init);
+	}
+	
+	/**
+	 * Function to initialise object instances after creation
+	 * 
+	 * @author Nodin
+	 */
+	@FunctionalInterface
+	public static interface InitFunction<T> {
 		
-		private final Class<T> type;
-		
-		private File directory;
-		private Predicate<File> predicate;
-		
-		private String properties;
-		
-		private Logger log;
-		
-		private LoaderBuilder(Class<T> type) {
-			this.type = type;
-			this.directory = DIRECTORY;
-			this.predicate = JAR_FILE;
-			this.properties = PROPERTIES;
-			this.log = LOG;
-		}
-		
-		public Loader<T> build() {
-			return new Loader<T>(type, directory, predicate::test, properties, log);
-		}
-		
-		public File getDirectory() {
-			return directory;
-		}
-		
-		public Predicate<File> getFilterSettings() {
-			return predicate;
-		}
-		
-		public Logger getLogger() {
-			return log;
-		}
-		
-		public String getPropertiesFile() {
-			return properties;
-		}
-		
-		public LoaderBuilder<T> setDirectory(File directory) {
-			this.directory = (Objects.isNull(directory)) ? DIRECTORY : directory;
-			return this;
-		}
-		
-		public LoaderBuilder<T> setFilterSettings(Predicate<File> predicate) {
-			this.predicate = (Objects.isNull(predicate)) ? JAR_FILE : JAR_FILE.and(predicate);
-			return this;
-		}
-		
-		public LoaderBuilder<T> setLogger(Logger log) {
-			this.log = (Objects.isNull(log)) ? LOG : log;
-			return this;
-		}
-		
-		public LoaderBuilder<T> setPropertiesFile(String properties) {
-			this.properties = (Objects.isNull(properties)) ? PROPERTIES : properties;
-			return this;
-		}
+		/**
+		 * Initialises the object instance
+		 * 
+		 * @param module The object instance to initialise
+		 * @param properties The properties file contained in the JAR file
+		 * 
+		 * @return The initialised object instance
+		 */
+		public T initialise(T module, Properties properties);
 	}
 }
