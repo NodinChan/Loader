@@ -25,7 +25,6 @@ import java.lang.reflect.InvocationTargetException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.function.Predicate;
@@ -88,7 +87,7 @@ public final class Loader<T> {
 	 * 
 	 * @return The object instance that was created
 	 */
-	public static <T> Optional<T> load(Class<T> type, File file, InitFunction<T> init) {
+	public static <T> T load(Class<T> type, File file, InitFunction<T> init) {
 		if (Objects.isNull(type))
 			throw new IllegalArgumentException(new NullPointerException("Class Type cannot be null"));
 		
@@ -126,7 +125,7 @@ public final class Loader<T> {
 			LOGGER.log(Level.WARNING, "The file \"" + file.getName() + "\" failed to load", e);
 		}
 		
-		return Optional.ofNullable(module);
+		return module;
 	}
 	
 	/**
@@ -142,7 +141,7 @@ public final class Loader<T> {
 		if (Objects.isNull(files))
 			throw new IllegalArgumentException(new NullPointerException("Files cannot be null"));
 		
-		return Stream.of(files).map((file) -> load(type, file, init)).filter((module) -> module.isPresent()).map((module) -> module.get()).collect(Collectors.toSet());
+		return Stream.of(files).map((file) -> load(type, file, init)).filter((module) -> Objects.nonNull(module)).collect(Collectors.toSet());
 	}
 	
 	/**
@@ -170,7 +169,7 @@ public final class Loader<T> {
 	 * 
 	 * @return The object instance that was created
 	 */
-	public static <T> Optional<T> load(Class<T> type, File file) {
+	public static <T> T load(Class<T> type, File file) {
 		return load(type, file, (module, properties) -> module);
 	}
 	
@@ -206,7 +205,7 @@ public final class Loader<T> {
 	 * 
 	 * @return The object instance that was created
 	 */
-	public Optional<T> load(File file) {
+	public T load(File file) {
 		return load(type, file, init);
 	}
 	
